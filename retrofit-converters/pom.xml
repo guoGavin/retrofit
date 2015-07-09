@@ -15,9 +15,11 @@
   <packaging>pom</packaging>
 
   <modules>
+    <module>gson</module>
     <module>protobuf</module>
     <module>jackson</module>
     <module>wire</module>
     <module>simplexml</module>
+    <module>moshi</module>
   </modules>
 </project>

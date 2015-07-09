@@ -8,14 +8,9 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
-import java.util.Map;
 import java.util.Random;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import rx.Observable;
-import rx.Scheduler;
-import rx.functions.Func1;
-import rx.schedulers.Schedulers;
 
 import static retrofit.RetrofitError.unexpectedError;
 
@@ -43,7 +38,7 @@ import static retrofit.RetrofitError.unexpectedError;
  * </pre>
  * Given a {@link RestAdapter} an instance of this class can be created by calling {@link #from}.
  * <pre>
- *   MockRestAdapter mockRestAdapter = MockRestAdapter.from(restAdapter);
+ *   MockRetrofit mockRetrofit = MockRetrofit.from(restAdapter);
  * </pre>
  * Instances of this class should be used as a singleton so that the behavior of every mock service
  * is consistent.
@@ -51,7 +46,7 @@ import static retrofit.RetrofitError.unexpectedError;
  * Rather than using the {@code MockUserService} directly, pass it through
  * {@link #create(Class, Object) the create method}.
  * <pre>
- *   UserService service = mockRestAdapter.create(UserService.class, new MockUserService());
+ *   UserService service = mockRetrofit.create(UserService.class, new MockUserService());
  * </pre>
  * The returned {@code UserService} instance will now behave like it is happening over the network
  * while allowing the mock implementation to be written synchronously.
@@ -60,52 +55,31 @@ import static retrofit.RetrofitError.unexpectedError;
  * {@link MockHttpException}. This should be done for both synchronous and asynchronous methods.
  * Do not call the {@link Callback#failure(RetrofitError) failure()} method of a callback.
  */
-public final class MockRestAdapter {
+public final class MockRetrofit {
   private static final int DEFAULT_DELAY_MS = 2000; // Network calls will take 2 seconds.
   private static final int DEFAULT_VARIANCE_PCT = 40; // Network delay varies by ±40%.
   private static final int DEFAULT_ERROR_PCT = 3; // 3% of network calls will fail.
   private static final int ERROR_DELAY_FACTOR = 3; // Network errors will be scaled by this value.
 
   /**
-   * Create a new {@link MockRestAdapter} which will act as a factory for mock services. Some of
+   * Create a new {@link MockRetrofit} which will act as a factory for mock services. Some of
    * the configuration of the supplied {@link RestAdapter} will be used generating mock behavior.
    */
-  public static MockRestAdapter from(RestAdapter restAdapter, Executor executor) {
-    return new MockRestAdapter(restAdapter, executor);
-  }
-
-  /** A listener invoked when the network behavior values for a {@link MockRestAdapter} change. */
-  public interface ValueChangeListener {
-    void onMockValuesChanged(long delayMs, int variancePct, int errorPct);
-
-    ValueChangeListener EMPTY = new ValueChangeListener() {
-      @Override public void onMockValuesChanged(long delayMs, int variancePct, int errorPct) {
-      }
-    };
+  public static MockRetrofit from(RestAdapter restAdapter, Executor executor) {
+    return new MockRetrofit(restAdapter, executor);
   }
 
   private final RestAdapter restAdapter;
   private final Executor executor;
-  private MockRxSupport mockRxSupport;
   final Random random = new Random();
 
-  private ValueChangeListener listener = ValueChangeListener.EMPTY;
   private int delayMs = DEFAULT_DELAY_MS;
   private int variancePct = DEFAULT_VARIANCE_PCT;
   private int errorPct = DEFAULT_ERROR_PCT;
 
-  private MockRestAdapter(RestAdapter restAdapter, Executor executor) {
+  private MockRetrofit(RestAdapter restAdapter, Executor executor) {
     this.restAdapter = restAdapter;
     this.executor = executor;
-  }
-
-  /** Set a listener to be notified when any mock value changes. */
-  public void setValueChangeListener(ValueChangeListener listener) {
-    this.listener = listener;
-  }
-
-  private void notifyValueChangeListener() {
-    listener.onMockValuesChanged(delayMs, variancePct, errorPct);
   }
 
   /** Set the network round trip delay, in milliseconds. */
@@ -116,10 +90,7 @@ public final class MockRestAdapter {
     if (delayMs > Integer.MAX_VALUE) {
       throw new IllegalArgumentException("Delay value too large. Max: " + Integer.MAX_VALUE);
     }
-    if (this.delayMs != delayMs) {
-      this.delayMs = (int) delayMs;
-      notifyValueChangeListener();
-    }
+    this.delayMs = (int) delayMs;
   }
 
   /** The network round trip delay, in milliseconds */
@@ -132,10 +103,7 @@ public final class MockRestAdapter {
     if (variancePct < 0 || variancePct > 100) {
       throw new IllegalArgumentException("Variance percentage must be between 0 and 100.");
     }
-    if (this.variancePct != variancePct) {
-      this.variancePct = variancePct;
-      notifyValueChangeListener();
-    }
+    this.variancePct = variancePct;
   }
 
   /** The plus-or-minus variance percentage of the network round trip delay. */
@@ -148,10 +116,7 @@ public final class MockRestAdapter {
     if (errorPct < 0 || errorPct > 100) {
       throw new IllegalArgumentException("Error percentage must be between 0 and 100.");
     }
-    if (this.errorPct != errorPct) {
-      this.errorPct = errorPct;
-      notifyValueChangeListener();
-    }
+    this.errorPct = errorPct;
   }
 
   /** The percentage of calls to {@link #calculateIsFailure()} that return {@code true}. */
@@ -182,6 +147,8 @@ public final class MockRestAdapter {
    * using {@link #create(Class, Object)}.
    */
   public int calculateDelayForError() {
+    if (delayMs == 0) return 0;
+
     return random.nextInt(delayMs * ERROR_DELAY_FACTOR);
   }
 
@@ -213,16 +180,14 @@ public final class MockRestAdapter {
   public <T> T create(Class<T> service, T mockService) {
     Utils.validateServiceClass(service);
     return (T) Proxy.newProxyInstance(service.getClassLoader(), new Class<?>[] { service },
-        new MockHandler(mockService, restAdapter.getMethodInfoCache(service)));
+        new MockHandler(service, mockService));
   }
 
   private class MockHandler implements InvocationHandler {
     private final Object mockService;
-    private final Map<Method, MethodInfo> methodInfoCache;
 
-    public MockHandler(Object mockService, Map<Method, MethodInfo> methodInfoCache) {
+    public MockHandler(Object mockService, T service) {
       this.mockService = mockService;
-      this.methodInfoCache = methodInfoCache;
     }
 
     @Override public Object invoke(Object proxy, Method method, final Object[] args)
@@ -234,7 +199,7 @@ public final class MockRestAdapter {
 
       // Load or create the details cache for the current method.
       final MethodInfo methodInfo = RestAdapter.getMethodInfo(methodInfoCache, method);
-      final Request request = buildRequest(methodInfo, restAdapter.requestInterceptor, args);
+      final Request request = buildRequest(methodInfo, args);
 
       if (methodInfo.executionType == MethodInfo.ExecutionType.SYNC) {
         try {
@@ -249,17 +214,6 @@ public final class MockRestAdapter {
         }
       }
 
-      if (methodInfo.executionType == MethodInfo.ExecutionType.RX) {
-        if (mockRxSupport == null) {
-          if (Platform.HAS_RX_JAVA) {
-            mockRxSupport = new MockRxSupport(restAdapter, executor);
-          } else {
-            throw new IllegalStateException("Observable method found but no RxJava on classpath");
-          }
-        }
-        return mockRxSupport.createMockObservable(this, methodInfo, args, request);
-      }
-
       executor.execute(new Runnable() {
         @Override public void run() {
           invokeAsync(methodInfo, args, request);
@@ -268,16 +222,11 @@ public final class MockRestAdapter {
       return null; // Asynchronous methods should have return type of void.
     }
 
-    private Request buildRequest(MethodInfo methodInfo, RequestInterceptor interceptor,
-        Object[] args) throws Throwable {
+    private Request buildRequest(MethodInfo methodInfo, Object[] args) throws Throwable {
       // Begin building a normal request.
-      String apiUrl = restAdapter.endpoint.url();
+      String apiUrl = restAdapter.baseUrl.url();
       RequestBuilder requestBuilder = new RequestBuilder(apiUrl, methodInfo, restAdapter.converter);
       requestBuilder.setArguments(args);
-
-      // Run it through the interceptor.
-      interceptor.intercept(requestBuilder);
-
       return requestBuilder.build();
     }
 
@@ -314,7 +263,7 @@ public final class MockRestAdapter {
         sleep(callDelay - tookMs);
 
         throw new MockHttpRetrofitError(httpEx.reason, url, response, httpEx.responseBody,
-            methodInfo.responseObjectType);
+            methodInfo.responseType);
       }
     }
 
@@ -357,7 +306,7 @@ public final class MockRestAdapter {
             Response response = httpEx.toResponse(request, restAdapter.converter);
 
             RetrofitError error = new MockHttpRetrofitError(httpEx.getMessage(), url, response,
-                httpEx.responseBody, methodInfo.responseObjectType);
+                httpEx.responseBody, methodInfo.responseType);
             Throwable cause = restAdapter.errorHandler.handleError(error);
             final RetrofitError e = cause == error ? error : unexpectedError(error.getUrl(), cause);
             callback.failure(e);
@@ -400,32 +349,5 @@ public final class MockRestAdapter {
 
   private static long uptimeMillis() {
     return System.nanoTime() / 1000000L;
-  }
-
-  /** Indirection to avoid VerifyError if RxJava isn't present. */
-  private static class MockRxSupport {
-    private final Scheduler httpScheduler;
-    private final ErrorHandler errorHandler;
-
-    MockRxSupport(RestAdapter restAdapter, Executor executor) {
-      httpScheduler = Schedulers.from(executor);
-      errorHandler = restAdapter.errorHandler;
-    }
-
-    Observable createMockObservable(final MockHandler mockHandler, final MethodInfo methodInfo,
-        final Object[] args, final Request request) {
-      return Observable.just("nothing") //
-          .flatMap(new Func1<String, Observable<?>>() {
-            @Override public Observable<?> call(String s) {
-              try {
-                return (Observable) mockHandler.invokeSync(methodInfo, args, request);
-              } catch (RetrofitError e) {
-                return Observable.error(errorHandler.handleError(e));
-              } catch (Throwable throwable) {
-                return Observable.error(throwable);
-              }
-            }
-          }).subscribeOn(httpScheduler);
-    }
   }
 }

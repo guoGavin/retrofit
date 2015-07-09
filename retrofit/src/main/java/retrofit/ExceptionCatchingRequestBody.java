@@ -8,7 +8,7 @@ import okio.BufferedSource;
 import okio.ForwardingSource;
 import okio.Okio;
 
-class ExceptionCatchingRequestBody extends ResponseBody {
+final class ExceptionCatchingRequestBody extends ResponseBody {
   private final ResponseBody delegate;
   private IOException thrownException;
 
@@ -20,12 +20,24 @@ class ExceptionCatchingRequestBody extends ResponseBody {
     return delegate.contentType();
   }
 
-  @Override public long contentLength() {
-    return delegate.contentLength();
+  @Override public long contentLength() throws IOException {
+    try {
+      return delegate.contentLength();
+    } catch (IOException e) {
+      thrownException = e;
+      throw e;
+    }
   }
 
-  @Override public BufferedSource source() {
-    return Okio.buffer(new ForwardingSource(delegate.source()) {
+  @Override public BufferedSource source() throws IOException {
+    BufferedSource delegateSource;
+    try {
+      delegateSource = delegate.source();
+    } catch (IOException e) {
+      thrownException = e;
+      throw e;
+    }
+    return Okio.buffer(new ForwardingSource(delegateSource) {
       @Override public long read(Buffer sink, long byteCount) throws IOException {
         try {
           return super.read(sink, byteCount);
@@ -37,11 +49,13 @@ class ExceptionCatchingRequestBody extends ResponseBody {
     });
   }
 
-  IOException getThrownException() {
-    return thrownException;
+  @Override public void close() throws IOException {
+    delegate.close();
   }
 
-  boolean threwException() {
-    return thrownException != null;
+  void throwIfCaught() throws IOException {
+    if (thrownException != null) {
+      throw thrownException;
+    }
   }
 }

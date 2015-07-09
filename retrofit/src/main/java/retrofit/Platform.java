@@ -19,15 +19,12 @@ import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
 import com.squareup.okhttp.OkHttpClient;
+import java.lang.reflect.Type;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
-import retrofit.converter.Converter;
-import retrofit.converter.GsonConverter;
 
 class Platform {
   private static final Platform PLATFORM = findPlatform();
-
-  static final boolean HAS_RX_JAVA = hasRxJavaOnClasspath();
 
   static Platform get() {
     return PLATFORM;
@@ -45,12 +42,11 @@ class Platform {
     return new Platform();
   }
 
-  Converter defaultConverter() {
-    return new GsonConverter();
-  }
-
-  Executor defaultCallbackExecutor() {
-    return new Utils.SynchronousExecutor();
+  CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
+    if (callbackExecutor != null) {
+      return new ExecutorCallAdapterFactory(callbackExecutor);
+    }
+    return new NothingCallAdapterFactory();
   }
 
   OkHttpClient defaultClient() {
@@ -62,24 +58,54 @@ class Platform {
   }
 
   /** Provides sane defaults for operation on Android. */
-  private static class Android extends Platform {
-    @Override Executor defaultCallbackExecutor() {
-      return new Executor() {
-        private final Handler handler = new Handler(Looper.getMainLooper());
+  static class Android extends Platform {
+    CallAdapter.Factory defaultCallAdapterFactory(Executor callbackExecutor) {
+      if (callbackExecutor == null) {
+        callbackExecutor = new MainThreadExecutor();
+      }
+      return new ExecutorCallAdapterFactory(callbackExecutor);
+    }
 
-        @Override public void execute(Runnable r) {
-          handler.post(r);
-        }
-      };
+    static class MainThreadExecutor implements Executor {
+      private final Handler handler = new Handler(Looper.getMainLooper());
+
+      @Override public void execute(Runnable r) {
+        handler.post(r);
+      }
+
+      @Override public String toString() {
+        return "MainThreadExecutor";
+      }
     }
   }
 
-  private static boolean hasRxJavaOnClasspath() {
-    try {
-      Class.forName("rx.Observable");
-      return true;
-    } catch (ClassNotFoundException ignored) {
+  static final class NothingCallAdapterFactory implements CallAdapter.Factory {
+    @Override public CallAdapter<?> get(Type returnType) {
+      if (Utils.getRawType(returnType) != Call.class) {
+        return null;
+      }
+      Type responseType = Utils.getCallResponseType(returnType);
+      return new NothingCallAdapter<>(responseType);
     }
-    return false;
+
+    @Override public String toString() {
+      return "Default";
+    }
+
+    static final class NothingCallAdapter<T> implements CallAdapter<T> {
+      private final Type responseType;
+
+      NothingCallAdapter(Type responseType) {
+        this.responseType = responseType;
+      }
+
+      @Override public Type responseType() {
+        return responseType;
+      }
+
+      @Override public Call<T> adapt(Call<T> call) {
+        return call;
+      }
+    }
   }
 }
